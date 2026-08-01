@@ -16,8 +16,8 @@ ESCUDO_CLUBE = os.path.join(FOTOS_DIR, "escudo_clube.png")
 os.makedirs(FOTOS_DIR, exist_ok=True)
 
 COLUNAS_PARTIDAS = [
-    "Data", "Competição", "Mandante", "Adversário",
-    "GolsPro", "GolsContra", "Resultado", "Formação", "Destaque",
+    "Data", "Temporada", "Competição", "Mandante", "Adversário",
+    "GolsPro", "GolsContra", "Resultado", "Formação", "Destaque", "ContaPontos",
 ]
 COLUNAS_TRANSFERENCIAS = ["Data", "Jogador", "Posição", "Tipo", "Clube Envolvido", "Valor (milhões)"]
 COLUNAS_TEMPORADAS = ["Temporada", "Clube", "Posição Final", "Pontos", "Títulos", "Orçamento Final", "Observações"]
@@ -36,6 +36,26 @@ def carregar(arquivo, colunas):
 
 def salvar(df, arquivo):
     df.to_csv(arquivo, index=False)
+
+
+def calcular_pontos(nome_temporada, partidas_df):
+    if partidas_df.empty or not nome_temporada:
+        return 0
+    jogos_temp = partidas_df[
+        (partidas_df["Temporada"].astype(str) == str(nome_temporada))
+        & (partidas_df["ContaPontos"].astype(str) == "True")
+    ]
+    pontos = (jogos_temp["Resultado"] == "Vitória").sum() * 3 + (jogos_temp["Resultado"] == "Empate").sum()
+    return int(pontos)
+
+
+def recalcular_pontos_temporadas():
+    if st.session_state.temporadas.empty:
+        return
+    st.session_state.temporadas["Pontos"] = st.session_state.temporadas["Temporada"].apply(
+        lambda t: calcular_pontos(t, st.session_state.partidas)
+    )
+    salvar(st.session_state.temporadas, TEMPORADAS_FILE)
 
 
 for chave, arquivo, colunas in [
@@ -89,9 +109,13 @@ aba1, aba2, aba3, aba4 = st.tabs(["📋 Partidas", "🔄 Transferências", "🏆
 with aba1:
     st.subheader("Nova partida")
     with st.form("form_partida", clear_on_submit=True):
+        ultima_temporada = (
+            st.session_state.partidas["Temporada"].iloc[-1] if not st.session_state.partidas.empty else ""
+        )
         c1, c2, c3 = st.columns(3)
         with c1:
             data_p = st.date_input("Data", value=date.today())
+            temporada_p = st.text_input("Temporada (ex: 2025/26)", value=ultima_temporada)
             competicao = st.text_input("Competição")
             mandante = st.selectbox("Mando de campo", ["Casa", "Fora"])
         with c2:
@@ -101,6 +125,7 @@ with aba1:
         with c3:
             formacao = st.text_input("Formação usada (ex: 4-3-3)")
             destaque = st.text_input("Jogador destaque da partida")
+            conta_pontos = st.checkbox("Conta pontos na liga dessa temporada?", value=True)
 
         enviar = st.form_submit_button("Salvar partida")
         if enviar:
@@ -111,12 +136,13 @@ with aba1:
             else:
                 resultado = "Empate"
             nova = pd.DataFrame(
-                [[data_p, competicao, mandante, adversario, gols_pro, gols_contra, resultado, formacao, destaque]],
+                [[data_p, temporada_p, competicao, mandante, adversario, gols_pro, gols_contra, resultado, formacao, destaque, conta_pontos]],
                 columns=COLUNAS_PARTIDAS,
             )
             st.session_state.partidas = pd.concat([st.session_state.partidas, nova], ignore_index=True)
             salvar(st.session_state.partidas, PARTIDAS_FILE)
-            st.success(f"Partida registrada — {resultado}!")
+            recalcular_pontos_temporadas()
+            st.success(f"Partida registrada — {resultado}! A temporada '{temporada_p}' já foi atualizada.")
 
     st.subheader("Histórico de partidas")
     st.dataframe(st.session_state.partidas[::-1], use_container_width=True, hide_index=True)
@@ -154,7 +180,10 @@ with aba2:
         st.download_button("⬇️ Baixar histórico de transferências (CSV)", csv_tr, "transferencias.csv", "text/csv")
 
 with aba3:
+    recalcular_pontos_temporadas()
+
     st.subheader("Nova temporada")
+    st.caption("A coluna 'Pontos' é preenchida sozinha com base nas partidas que você registrar com essa mesma temporada — não precisa digitar.")
     with st.form("form_temporada", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
@@ -162,19 +191,19 @@ with aba3:
             clube_temp = st.text_input("Clube")
             posicao_final = st.text_input("Posição final na liga")
         with c2:
-            pontos = st.number_input("Pontos conquistados", 0, 200, 0)
             titulos = st.text_input("Títulos conquistados")
             orcamento = st.number_input("Orçamento final (milhões)", value=0.0, step=0.5)
         obs = st.text_area("Observações")
         enviar_temp = st.form_submit_button("Salvar temporada")
         if enviar_temp:
+            pontos_iniciais = calcular_pontos(temporada, st.session_state.partidas)
             nova_temp = pd.DataFrame(
-                [[temporada, clube_temp, posicao_final, pontos, titulos, orcamento, obs]],
+                [[temporada, clube_temp, posicao_final, pontos_iniciais, titulos, orcamento, obs]],
                 columns=COLUNAS_TEMPORADAS,
             )
             st.session_state.temporadas = pd.concat([st.session_state.temporadas, nova_temp], ignore_index=True)
             salvar(st.session_state.temporadas, TEMPORADAS_FILE)
-            st.success("Temporada registrada!")
+            st.success(f"Temporada registrada com {pontos_iniciais} pontos calculados automaticamente!")
 
     st.subheader("Histórico de temporadas")
     st.dataframe(st.session_state.temporadas[::-1], use_container_width=True, hide_index=True)
@@ -183,6 +212,7 @@ with aba3:
         st.download_button("⬇️ Baixar histórico de temporadas (CSV)", csv_temp, "temporadas.csv", "text/csv")
 
 with aba4:
+    recalcular_pontos_temporadas()
     st.subheader("Resumo geral da carreira")
     p = st.session_state.partidas
     if not p.empty:
